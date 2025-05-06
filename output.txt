@@ -1,0 +1,16 @@
+<!-- image -->
+
+## 21A.25.040 Densities and dimensions Commercial zones.
+
+## A. Commercial Zones.
+
+|                               | COMMERCIAL                       | COMMERCIAL   | COMMERCIAL   |
+|-------------------------------|----------------------------------|--------------|--------------|
+| N s STANDARDS                 | NEIGHBORHOODI COMMUNITY BUSINESS | BUSINESS     | OFFICE       |
+|                               | NB                               | CB           |              |
+| Maximum Density DUIAcre       | 8 dulac                          | 18 dulac (1) | 18 dulac (1) |
+| Minimum Lot Area              |                                  |              |              |
+| Maximum Lot Depth/Width Ratio |                                  | 10 ft        | 10 ft        |
+| Minimum Street Setback        | 10 ft ((2)                       | 10 ft ((2)   | 10 ft        |
+| Minimum Interior Setback (4)  | 20 ft (5)                        | 20 ft (5)    | 20 ft (5)    |
+| Base Height (7)               | 35 ft 45 ft                      | 35 ft 60 ft  | 45 ft 60 ft  |

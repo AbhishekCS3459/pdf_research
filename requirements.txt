@@ -1,0 +1,15 @@
+docling
+pypdfium2
+easyocr
+Pillow
+numpy
+torch
+opencv-python-headless
+tqdm
+langchain
+langchain-community
+langchain-huggingface
+langchain-ollama
+sentence-transformers
+faiss-cpu
+pypdfium2
