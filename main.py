@@ -1,6 +1,15 @@
 import os
+import json
+import logging
+import time
+from pathlib import Path
 from typing import List
-from docling.document_converter import DocumentConverter
+
+from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
+
 from langchain_ollama.llms import OllamaLLM
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -8,79 +17,109 @@ from langchain_community.vectorstores import FAISS
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 
-# Get the project root directory
-# project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-project_root = os.path.dirname(os.path.abspath(__file__))
 
-def extract_pdf_content(file_path) -> str:
-    converter = DocumentConverter()
-    result = converter.convert(file_path)
-    return result.document.export_to_markdown()
+def extract_structured_pdf(file_path: str):
+    pipeline_options = PdfPipelineOptions()
+    pipeline_options.do_ocr = True
+    pipeline_options.do_table_structure = True
+    pipeline_options.table_structure_options.do_cell_matching = True
+
+    doc_converter = DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(
+                pipeline_options=pipeline_options,
+                backend=PyPdfiumDocumentBackend,
+            )
+        }
+    )
+
+    result = doc_converter.convert(file_path)
+    return result
+
+
+def save_exports(result, output_dir: Path):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    filename = result.input.file.stem
+
+    (output_dir / f"{filename}.json").write_text(
+        json.dumps(result.document.export_to_dict(), indent=2),
+        encoding="utf-8"
+    )
+
+    (output_dir / f"{filename}.txt").write_text(
+        result.document.export_to_text(),
+        encoding="utf-8"
+    )
+
+    (output_dir / f"{filename}.md").write_text(
+        result.document.export_to_markdown(),
+        encoding="utf-8"
+    )
+
+    (output_dir / f"{filename}.doctags").write_text(
+        result.document.export_to_document_tokens(),
+        encoding="utf-8"
+    )
+
+    print(f"✅ Extracted data saved to {output_dir}")
+
 
 def create_vector_store(texts: List[str]) -> FAISS:
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L12-v2"
     )
-    vector_store = FAISS.from_texts(texts, embeddings)
-    return vector_store
+    return FAISS.from_texts(texts, embeddings)
+
 
 def get_qa_chain(vector_store):
-    # Updated model name from "llama3.1" to "llama3"
-#     curl http://localhost:11434/api/generate -d '{
-#   "model": "gemma:2b",
-#   "prompt": "Explain embodied intelligence in simple terms.",
-#   "stream": false
-# }'
-    llm = OllamaLLM(model="llama3:instruct")
+    llm = OllamaLLM(model="gemma:2b")
+
     prompt_template = """
-    Use the following pieces of context to answer the question at the end.
+Use the following context to answer the question.
 
-    Check context very carefully and reference and try to make sense of that before responding.
-    If you don't know the answer, just say you don't know.
-    Don't try to make up an answer.
-    Answer must be to the point.
-    Think step-by-step.
+Context: {context}
 
-    Context: {context}
+Question: {question}
 
-    Question: {question}
+Answer:"""
 
-    Answer:"""
-
-    PROMPT = PromptTemplate(
+    prompt = PromptTemplate(
         template=prompt_template, input_variables=["context", "question"]
     )
 
-    qa_chain = RetrievalQA.from_chain_type(
+    return RetrievalQA.from_chain_type(
         llm=llm,
         chain_type="stuff",
         retriever=vector_store.as_retriever(search_kwargs={"k": 3}),
-        chain_type_kwargs={"prompt": PROMPT},
+        chain_type_kwargs={"prompt": prompt},
         return_source_documents=True,
     )
-    return qa_chain
+
 
 def main():
-    file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "input", "sample-3.pdf")
+    logging.basicConfig(level=logging.INFO)
 
-    structured_content = extract_pdf_content(file_path)
-    with open("output.txt", 'w') as file:
-        file.write(structured_content)
+    file_path = os.path.join("input", "sample-1.pdf")
+    output_dir = Path("output")
+    result = extract_structured_pdf(file_path)
 
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=2000,
-        chunk_overlap=100,
-        is_separator_regex=False
-    )
-    text_chunks = text_splitter.split_text(structured_content)
+    save_exports(result, output_dir)
 
-    vector_store = create_vector_store(text_chunks)
+    # Vector store from Markdown
+    md_path = output_dir / f"{result.input.file.stem}.md"
+    markdown_text = md_path.read_text(encoding="utf-8")
+
+    splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=100)
+    chunks = splitter.split_text(markdown_text)
+
+    vector_store = create_vector_store(chunks)
     qa_chain = get_qa_chain(vector_store)
 
-    question = "What is Embodied Intelligence?"  # Customize this
-    print(f"\nQuestion: {question}")
+    question = "Hey Give me the summary of this pdf document."
+    print(f"\n📌 Question: {question}")
     response = qa_chain.invoke({"query": question})
-    print(f"\nAnswer: {response['result']}")
+    print(f"\n🧠 Answer: {response['result']}")
+
 
 if __name__ == "__main__":
     main()
