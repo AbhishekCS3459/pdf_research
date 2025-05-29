@@ -4,6 +4,7 @@ from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.chunking import HybridChunker
 import re
 
 def configure_logging():
@@ -24,7 +25,7 @@ def normalize_text(text):
     # Lowercase, remove excessive whitespace, normalize line breaks
     return re.sub(r'\s+', ' ', text).strip().lower()
 
-def match_chunks_to_pdf(chunks, pdf_file_path):
+def match_chunks_to_pdf(input_chunks, pdf_file_path):
     """
     Matches the provided chunks to the PDF content and extracts metadata.
     Handles multi-page, multi-section, and multi-bbox chunks.
@@ -46,96 +47,71 @@ def match_chunks_to_pdf(chunks, pdf_file_path):
             )
         }
     )
-
+    print("Start-------------------------")
+    print(doc_converter)
+    print("End-------------------------")
     try:
         conv_result = doc_converter.convert(pdf_path)
+        document = conv_result.document
+        # Use HybridChunker to chunk the document
+        chunker = HybridChunker()
+        docling_chunks = chunker.chunk(document)
+        print("\n--- HybridChunker Chunks ---\n")
+        for i, c in enumerate(docling_chunks):
+            print(f"Chunk {i}: {c.text[:200]}{'...' if len(c.text) > 200 else ''}")
+        print("\n--- End of HybridChunker Chunks ---\n")
     except Exception as e:
         logging.exception(f"Error during document conversion: {e}")
         return []
 
-    document = conv_result.document
-
-    # Step 1: Build a flat text and mapping from each character to its source
-    flat_text = ""
-    char_map = []  # Each entry: (text_element_idx, char_idx_in_element)
-    element_meta = []  # For quick lookup: (page_no, bbox, section_header)
-
-    # Track the current section header for each text element
-    current_section = None
-    for idx, text_element in enumerate(document.texts):
-        # Find the nearest previous section header
-        if getattr(text_element, "label", None) == "section_header":
-            current_section = text_element.text
-        element_meta.append({
-            "page_no": text_element.prov[0].page_no,
-            "bbox": text_element.prov[0].bbox,
-            "section_header": current_section,
-            "text_element_idx": idx,
-        })
-        for char_idx, char in enumerate(text_element.text):
-            flat_text += char
-            char_map.append({
-                "text_element_idx": idx,
-                "char_idx_in_element": char_idx,
-            })
-        # Add a space between elements for normalization
-        flat_text += " "
-        char_map.append({
-            "text_element_idx": idx,
-            "char_idx_in_element": len(text_element.text),  # virtual space
-        })
-
-    norm_flat_text = normalize_text(flat_text)
-
+    # Now match user chunks to the HybridChunker chunks for optimal matching
     results = []
-    for chunk in chunks:
+    for chunk in input_chunks:
         norm_chunk = normalize_text(chunk)
-        match = re.search(re.escape(norm_chunk), norm_flat_text)
-        if not match:
-            # Try a fuzzy match (allowing for minor whitespace differences)
-            # For simplicity, skip fuzzy here, but can use difflib or rapidfuzz for production
-            continue
-
-        start, end = match.start(), match.end()
-        # Map back to char_map to get all involved text elements
-        involved_elements = set()
-        involved_pages = set()
-        involved_bboxes = []
-        involved_sections = set()
-        matched_text = flat_text[start:end]
-
-        for i in range(start, end):
-            mapping = char_map[i]
-            idx = mapping["text_element_idx"]
-            meta = element_meta[idx]
-            involved_elements.add(idx)
-            involved_pages.add(meta["page_no"])
-            involved_bboxes.append(meta["bbox"])
-            if meta["section_header"]:
-                involved_sections.add(meta["section_header"])
-
-        # Merge consecutive bboxes on the same page for clarity
-        bbox_info = []
-        for idx in sorted(involved_elements):
-            meta = element_meta[idx]
-            bbox = meta["bbox"]
-            bbox_info.append({
-                "page_no": meta["page_no"],
-                "bbox": {
-                    "l": bbox.l,
-                    "t": bbox.t,
-                    "r": bbox.r,
-                    "b": bbox.b
-                }
+        best_match = None
+        best_score = 0
+        for doc_chunk in docling_chunks:
+            norm_doc_chunk = normalize_text(doc_chunk.text)
+            # Try both containment and overlap for better matching
+            if norm_chunk in norm_doc_chunk or norm_doc_chunk in norm_chunk:
+                # Score: proportion of overlap
+                overlap = min(len(norm_chunk), len(norm_doc_chunk))
+                score = overlap / max(len(norm_chunk), len(norm_doc_chunk))
+                if score > best_score:
+                    best_score = score
+                    best_match = doc_chunk
+        if best_match:
+            # Extract metadata from the best matching docling chunk
+            pages = set()
+            bboxes = []
+            sections = set()
+            for prov in getattr(best_match, 'prov', []):
+                pages.add(prov.page_no)
+                bboxes.append({
+                    "page_no": prov.page_no,
+                    "bbox": {
+                        "l": prov.bbox.l,
+                        "t": prov.bbox.t,
+                        "r": prov.bbox.r,
+                        "b": prov.bbox.b
+                    }
+                })
+            if hasattr(best_match, 'section_header') and best_match.section_header:
+                sections.add(best_match.section_header)
+            results.append({
+                "matched_text": best_match.text.strip(),
+                "pages": sorted(list(pages)),
+                "bounding_boxes": bboxes,
+                "section_headers": list(sections)
             })
-
-        results.append({
-            "matched_text": matched_text.strip(),
-            "pages": sorted(list(involved_pages)),
-            "bounding_boxes": bbox_info,
-            "section_headers": list(involved_sections)
-        })
-
+        else:
+            # If no match, add a result with empty fields for visibility
+            results.append({
+                "matched_text": "",
+                "pages": [],
+                "bounding_boxes": [],
+                "section_headers": []
+            })
     return results
 
 if __name__ == "__main__":
